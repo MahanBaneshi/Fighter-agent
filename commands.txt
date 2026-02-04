@@ -1,0 +1,6 @@
+برای انجام پروژه هم احتمالا الان مشکلی که باشه نصب پکیج های پایتون باشه با این دستور می‌تونید از mirror ایرانی پکیج هاتون رو نصب کنید.
+مثلا اگه بخواید جنگو نصب کنید:
+pip install -i https://mirror-pypi.runflare.com/simple django
+یا برای نصب nicegui:
+pip install -i https://mirror-pypi.runflare.com/simple nicegui
+به همین شکل صرفا اسم پکیجی که میخواین رو قرار میدین.
