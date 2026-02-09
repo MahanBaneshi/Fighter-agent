@@ -61,9 +61,7 @@ def evaluate_state(fighter_info, opponent_info) -> float:
         score -= 0.05 * dash_cd
 
     # 6) Jump has no score effect for now
-
     return score
-
 
 def simulate_next_state(fighter_info, opponent_info, action):
     f = dict(fighter_info)
@@ -109,8 +107,6 @@ def simulate_next_state(fighter_info, opponent_info, action):
 
     return f, o
 
-
-
 def choose_action_by_heuristic(fighter_info, opponent_info) -> dict:
     fx = fighter_info["x"]
     ox = opponent_info["x"]
@@ -141,10 +137,8 @@ def choose_action_by_heuristic(fighter_info, opponent_info) -> dict:
             best = a
 
     best = dict(best)
-    best["debug"] = None  # یا best_score برای دیباگ
+    best["debug"] = None  
     return best
-
-
 
 def generate_actions(f_info, o_info):
     fx = f_info["x"]
@@ -165,8 +159,6 @@ def generate_actions(f_info, o_info):
         actions.append({"move": None, "attack": None, "jump": False, "dash": "left" if enemy_right else "right", "debug": None})
 
     return actions
-
-
 
 def minimax_alpha_beta(f_info, o_info, depth, alpha, beta, maximizing_player):
     """
@@ -203,8 +195,6 @@ def minimax_alpha_beta(f_info, o_info, depth, alpha, beta, maximizing_player):
                 break
         return worst_score, None
     
-
-
 def choose_action_minimax(fighter_info, opponent_info, depth=2):
     # depth=2 usually safe under 0.4s with small branching
     _, best = minimax_alpha_beta(
@@ -218,7 +208,6 @@ def choose_action_minimax(fighter_info, opponent_info, depth=2):
         best = {"move": None, "attack": None, "jump": False, "dash": None, "debug": None}
     return best
 
-
 def make_move(fighter_info, opponent_info, saved_data) -> dict:
     action = {
         "move": None,
@@ -231,7 +220,6 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
 
     # pick action using miniMax chooser
     picked = choose_action_minimax(fighter_info, opponent_info, depth=2)
-
     action["move"] = picked["move"]
     action["attack"] = picked["attack"]
     action["jump"] = picked["jump"]
@@ -243,9 +231,7 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
         saved_data = {}
     saved_data["frame"] = int(saved_data.get("frame", 0)) + 1
     action["saved_data"] = saved_data
-
     return action
-
 
 try:
     input_data = input()
