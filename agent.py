@@ -9,55 +9,67 @@ def evaluate_state(fighter_info, opponent_info) -> float:
     fx, fy = fighter_info["x"], fighter_info["y"]
     ox, oy = opponent_info["x"], opponent_info["y"]
 
-    adx = abs(ox - fx)
-    ady = abs(oy - fy)
-
     fh = fighter_info["health"]
     oh = opponent_info["health"]
 
     light_cd, heavy_cd = fighter_info["attack_cooldown"]
-    dash_cd = fighter_info["dash_cooldown"]
+    dash_cd = fighter_info.get("dash_cooldown", 999999)
 
-    opp_attacking = opponent_info["attacking"]
-    opp_jumping = opponent_info.get("jump", False)
-    me_jumping = fighter_info["jump"]
+    HIT_W, HIT_H = 120, 180
 
-    in_attack_range = (adx <= 160) and (ady <= 120)
+    # rects
+    f_top = fy - HIT_H // 2
+    o_left = ox - HIT_W // 2
+    o_top = oy - HIT_H // 2
+    o_rect = (o_left, o_top, HIT_W, HIT_H)
+
+    flip = (ox < fx)
+    atk_left = fx - (HIT_W if flip else 0)
+    atk_top = f_top
+    atk_rect = (atk_left, atk_top, HIT_W, HIT_H)
+
+    def collide(a, b):
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        return (ax < bx + bw) and (ax + aw > bx) and (ay < by + bh) and (ay + ah > by)
+
+    in_attack_range = collide(atk_rect, o_rect)
+
+    dx = abs(ox - fx)
+    dy = abs(oy - fy)
 
     score = 0.0
 
-    # health difference
+    # health
     score += 3.0 * (fh - oh)
 
-    # encourage being close
+    # spacing
     if in_attack_range:
         score += 80.0
     else:
-        score -= 0.2 * adx
+        score -= 0.2 * dx
 
-    # STRONG encourage attack availability
+    # attack ready
     if in_attack_range and light_cd <= 0:
         score += 100.0
     if in_attack_range and heavy_cd <= 0:
         score += 140.0
 
-    # NEW: jump logic
+    # anti-air
+    opp_jumping = opponent_info.get("jump", False)
+    me_jumping = fighter_info.get("jump", False)
     if opp_jumping and in_attack_range:
-        if me_jumping:
-            score += 60.0      # defensive jump success
-        else:
-            score -= 80.0      # stayed grounded → bad
+        score += 60.0 if me_jumping else -80.0
 
-    # discourage pure retreat
-    if adx > 260:
+    # far penalty
+    if dx > 260:
         score -= 70.0
 
-    # dash is situational
-    if dash_cd == 0 and opp_attacking:
+    # dash situational
+    if dash_cd == 0 and opponent_info.get("attacking", False):
         score += 15.0
 
     return score
-
 
 
 def simulate_next_state(fighter_info, opponent_info, action):
@@ -65,54 +77,64 @@ def simulate_next_state(fighter_info, opponent_info, action):
     o = dict(opponent_info)
 
     SPEED = 5
-    DASH_SPEED = 30
+    DASH_SPEED_PER_FRAME = 30
+    DASH_FRAMES = 10
+    DASH_TOTAL = DASH_SPEED_PER_FRAME * DASH_FRAMES  # 300
     LIGHT_DMG = 10
     HEAVY_DMG = 20
+    HIT_W, HIT_H = 120, 180
 
-    # defaults
     f.setdefault("attack_cooldown", [0, 0])
-    f.setdefault("dash_cooldown", 999999)
+    f.setdefault("dash_cooldown", 0)
     f.setdefault("attacking", False)
     f.setdefault("jump", False)
 
     # move
-    if action["move"] == "left":
+    if action.get("move") == "left":
         f["x"] -= SPEED
-    elif action["move"] == "right":
+    elif action.get("move") == "right":
         f["x"] += SPEED
 
-    # dash
-    if action["dash"] in ("left", "right") and f["dash_cooldown"] == 0:
-        f["x"] += (-DASH_SPEED if action["dash"] == "left" else DASH_SPEED)
+    # dash (full 10 frames)
+    if action.get("dash") in ("left", "right") and f.get("dash_cooldown", 0) == 0:
+        f["x"] += (-DASH_TOTAL if action["dash"] == "left" else DASH_TOTAL)
         f["dash_cooldown"] = 50
 
-    # tick cooldowns
+    # cooldowns
     f["attack_cooldown"][0] = max(0, f["attack_cooldown"][0] - 1)
     f["attack_cooldown"][1] = max(0, f["attack_cooldown"][1] - 1)
-    f["dash_cooldown"] = max(0, f["dash_cooldown"] - 1)
-    f["attacking"] = False  # reset each frame
+    f["dash_cooldown"] = max(0, f.get("dash_cooldown", 0) - 1)
 
-    # attack range
-    in_attack_range = (abs(o["x"] - f["x"]) <= 160) and (abs(o["y"] - f["y"]) <= 120)
+    f["attacking"] = False
 
-    # attack logic
-    if action["attack"] == 1 and f["attack_cooldown"][0] == 0:
+    # rects
+    f_top = f["y"] - HIT_H // 2
+    o_rect = (o["x"] - HIT_W // 2, o["y"] - HIT_H // 2, HIT_W, HIT_H)
+
+    flip = (o["x"] < f["x"])
+    atk_rect = (f["x"] - (HIT_W if flip else 0), f_top, HIT_W, HIT_H)
+
+    def collide(a, b):
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        return (ax < bx + bw) and (ax + aw > bx) and (ay < by + bh) and (ay + ah > by)
+
+    # attack
+    atk = action.get("attack")
+    if atk == 1 and f["attack_cooldown"][0] == 0:
         f["attacking"] = True
         f["attack_cooldown"][0] = 25
-        if in_attack_range:
+        if collide(atk_rect, o_rect):
             o["health"] = max(0, o["health"] - LIGHT_DMG)
-        else:
-            f["health"] -= 3  # punish whiff
 
-    elif action["attack"] == 2 and f["attack_cooldown"][1] == 0:
+    elif atk == 2 and f["attack_cooldown"][1] == 0:
         f["attacking"] = True
         f["attack_cooldown"][1] = 100
-        if in_attack_range:
+        if collide(atk_rect, o_rect):
             o["health"] = max(0, o["health"] - HEAVY_DMG)
-        else:
-            f["health"] -= 6  # heavier punish
 
     return f, o
+
 
 
 def choose_action_by_heuristic(fighter_info, opponent_info) -> dict:
@@ -181,7 +203,6 @@ def generate_actions(f_info, o_info):
 
     return actions
 
-
 def minimax_alpha_beta(f_info, o_info, depth, alpha, beta, maximizing_player):
     """
     maximizing_player=True  -> our turn
@@ -231,6 +252,9 @@ def choose_action_minimax(fighter_info, opponent_info, depth=2):
     return best
 
 def make_move(fighter_info, opponent_info, saved_data) -> dict:
+    if not isinstance(saved_data, dict):
+        saved_data = {}
+
     action = {
         "move": None,
         "attack": None,
@@ -240,43 +264,178 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
         "saved_data": saved_data,
     }
 
-    # ===== PHASE 4: GUARANTEED ATTACK =====
-    dx = abs(fighter_info["x"] - opponent_info["x"])
-    dy = abs(fighter_info["y"] - opponent_info["y"])
+    # stats
+    stats = saved_data.get("stats")
+    if not isinstance(stats, dict):
+        stats = {}
+    stats.setdefault("frames", 0)
+    stats.setdefault("mode_counts", {})
+    stats.setdefault("attacks_light", 0)
+    stats.setdefault("attacks_heavy", 0)
+    stats.setdefault("jumps", 0)
+    stats.setdefault("dashes", 0)
+    stats.setdefault("retreat_frames", 0)
+    stats.setdefault("opp_attack_starts", 0)
+    stats.setdefault("punish_windows", 0)
+    saved_data["stats"] = stats
+    stats["frames"] += 1
 
-    in_attack_range = (dx <= 160) and (dy <= 120)
+    fx, fy = fighter_info["x"], fighter_info["y"]
+    ox, oy = opponent_info["x"], opponent_info["y"]
+
     light_cd, heavy_cd = fighter_info["attack_cooldown"]
-    is_attacking = fighter_info["attacking"]
+    dash_cd = fighter_info.get("dash_cooldown", 999999)
+    is_attacking = fighter_info.get("attacking", False)
 
-    if in_attack_range and not is_attacking:
-        if heavy_cd == 0:
-            action["attack"] = 2
-            return action
-        elif light_cd == 0:
-            action["attack"] = 1
-            return action
+    HIT_W, HIT_H = 120, 180
 
-    # ===== PHASE 3: ANTI-AIR / DEFENSIVE JUMP =====
-    if opponent_info["y"] < fighter_info["y"] - 40:
-        action["jump"] = True
+    def collide(a, b):
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        return (ax < bx + bw) and (ax + aw > bx) and (ay < by + bh) and (ay + ah > by)
 
-    # ===== PHASE 2: BASIC POSITIONING =====
-    enemy_right = opponent_info["x"] > fighter_info["x"]
+    def in_range(fx_, fy_, ox_, oy_):
+        f_top = fy_ - HIT_H // 2
+        o_rect = (ox_ - HIT_W // 2, oy_ - HIT_H // 2, HIT_W, HIT_H)
+        flip = (ox_ < fx_)
+        atk_rect = (fx_ - (HIT_W if flip else 0), f_top, HIT_W, HIT_H)
+        return collide(atk_rect, o_rect)
 
-    if not in_attack_range:
+    enemy_right = ox > fx
+    dx = abs(ox - fx)
+    in_attack_range = in_range(fx, fy, ox, oy)
+    opp_attacking = opponent_info.get("attacking", False)
+    opp_air = (oy < fy - 40)
+
+    # opponent attack edge
+    prev_opp = bool(saved_data.get("prev_opp_attacking", False))
+    if (not prev_opp) and opp_attacking:
+        stats["opp_attack_starts"] += 1
+    if prev_opp and (not opp_attacking):
+        saved_data["punish_frames"] = 12
+        stats["punish_windows"] += 1
+    saved_data["prev_opp_attacking"] = opp_attacking
+
+    if saved_data.get("punish_frames", 0) > 0:
+        saved_data["punish_frames"] = max(0, int(saved_data["punish_frames"]) - 1)
+
+    mode = saved_data.get("mode", None)
+
+    def finalize():
+        m = saved_data.get("mode", mode) or "NONE"
+        stats["mode_counts"][m] = stats["mode_counts"].get(m, 0) + 1
+
+        if action.get("attack") == 1:
+            stats["attacks_light"] += 1
+        elif action.get("attack") == 2:
+            stats["attacks_heavy"] += 1
+
+        if action.get("jump"):
+            stats["jumps"] += 1
+        if action.get("dash") in ("left", "right"):
+            stats["dashes"] += 1
+
+        if action.get("move") in ("left", "right") and saved_data.get("mode") == "RETREAT":
+            stats["retreat_frames"] += 1
+
+        action["saved_data"] = saved_data
+        return action
+
+    # dash commit
+    if saved_data.get("dash_frames_left", 0) > 0:
+        saved_data["dash_frames_left"] -= 1
+        action["dash"] = saved_data.get("dash_dir")
+        if saved_data.get("dash_frames_left", 0) == 0 and saved_data.get("dash_kind") == "in":
+            saved_data["attack_after_dash"] = 1
+        return finalize()
+
+    # post-dash: only light, keep moving if not ready
+    if saved_data.get("attack_after_dash", 0) > 0:
+        if in_attack_range and (not is_attacking):
+            if light_cd == 0:
+                saved_data["attack_after_dash"] = 0
+                action["attack"] = 1
+                return finalize()
         action["move"] = "right" if enemy_right else "left"
-    else:
-        # small retreat when too close and can't attack
-        if light_cd > 0 and heavy_cd > 0:
+        return finalize()
+
+    frames = int(saved_data.get("mode_frames", 0))
+
+    def set_mode(m, k):
+        saved_data["mode"] = m
+        saved_data["mode_frames"] = k
+
+    # mode select
+    if frames <= 0 or (saved_data.get("mode") is None):
+        if saved_data.get("punish_frames", 0) > 0:
+            set_mode("PUNISH", 10)
+        elif opp_air:
+            set_mode("ANTI_AIR", 12)
+        elif opp_attacking and dx < 220:
+            set_mode("RETREAT", 10)
+        elif in_attack_range and (light_cd == 0):
+            set_mode("PRESSURE", 10)
+        else:
+            set_mode("APPROACH", 12)
+
+    mode = saved_data["mode"]
+    frames = int(saved_data.get("mode_frames", 0))
+    saved_data["mode_frames"] = max(0, frames - 1)
+
+    # PUNISH: heavy allowed, else light
+    if mode == "PUNISH":
+        if in_attack_range and (not is_attacking):
+            if heavy_cd == 0:
+                action["attack"] = 2
+                return finalize()
+            if light_cd == 0:
+                action["attack"] = 1
+                return finalize()
+        action["move"] = "right" if enemy_right else "left"
+        return finalize()
+
+    if mode == "ANTI_AIR":
+        action["jump"] = True
+        if dx < 200:
             action["move"] = "left" if enemy_right else "right"
+        return finalize()
 
-    # ===== SAFE FALLBACK =====
-    if not isinstance(saved_data, dict):
-        saved_data = {}
+    if mode == "RETREAT":
+        action["move"] = "left" if enemy_right else "right"
+        if dx < 160:
+            action["jump"] = True
+        return finalize()
+
+    # PRESSURE: only light
+    if mode == "PRESSURE":
+        if in_attack_range and (not is_attacking) and light_cd == 0:
+            action["attack"] = 1
+            return finalize()
+        action["move"] = "right" if enemy_right else "left"
+        return finalize()
+
+    # APPROACH + spacing (light only if ready)
+    ideal_min, ideal_max = 140, 170
+    if dx > ideal_max:
+        action["move"] = "right" if enemy_right else "left"
+    elif dx < ideal_min:
+        action["move"] = "left" if enemy_right else "right"
+    else:
+        if in_attack_range and (not is_attacking) and light_cd == 0:
+            action["attack"] = 1
+            return finalize()
+
+    # dash-in only if light ready
+    if dash_cd == 0 and (not in_attack_range) and dx > 260 and (light_cd == 0):
+        saved_data["dash_frames_left"] = 10
+        saved_data["dash_dir"] = "right" if enemy_right else "left"
+        saved_data["dash_kind"] = "in"
+        action["dash"] = saved_data["dash_dir"]
+        return finalize()
+
     saved_data["frame"] = saved_data.get("frame", 0) + 1
-    action["saved_data"] = saved_data
+    return finalize()
 
-    return action
 
 
 try:
