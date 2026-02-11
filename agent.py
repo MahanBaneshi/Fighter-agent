@@ -255,37 +255,11 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
     if not isinstance(saved_data, dict):
         saved_data = {}
 
-    action = {
-        "move": None,
-        "attack": None,
-        "jump": False,
-        "dash": None,
-        "debug": None,
-        "saved_data": saved_data,
-    }
-
-    # stats
-    stats = saved_data.get("stats")
-    if not isinstance(stats, dict):
-        stats = {}
-    stats.setdefault("frames", 0)
-    stats.setdefault("mode_counts", {})
-    stats.setdefault("attacks_light", 0)
-    stats.setdefault("attacks_heavy", 0)
-    stats.setdefault("jumps", 0)
-    stats.setdefault("dashes", 0)
-    stats.setdefault("retreat_frames", 0)
-    stats.setdefault("opp_attack_starts", 0)
-    stats.setdefault("punish_windows", 0)
-    saved_data["stats"] = stats
-    stats["frames"] += 1
-
     fx, fy = fighter_info["x"], fighter_info["y"]
     ox, oy = opponent_info["x"], opponent_info["y"]
 
     light_cd, heavy_cd = fighter_info["attack_cooldown"]
-    dash_cd = fighter_info.get("dash_cooldown", 999999)
-    is_attacking = fighter_info.get("attacking", False)
+    opp_attacking = opponent_info.get("attacking", False)
 
     HIT_W, HIT_H = 120, 180
 
@@ -304,137 +278,63 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
     enemy_right = ox > fx
     dx = abs(ox - fx)
     in_attack_range = in_range(fx, fy, ox, oy)
-    opp_attacking = opponent_info.get("attacking", False)
-    opp_air = (oy < fy - 40)
 
-    # opponent attack edge
-    prev_opp = bool(saved_data.get("prev_opp_attacking", False))
-    if (not prev_opp) and opp_attacking:
-        stats["opp_attack_starts"] += 1
-    if prev_opp and (not opp_attacking):
-        saved_data["punish_frames"] = 12
-        stats["punish_windows"] += 1
-    saved_data["prev_opp_attacking"] = opp_attacking
-
-    if saved_data.get("punish_frames", 0) > 0:
-        saved_data["punish_frames"] = max(0, int(saved_data["punish_frames"]) - 1)
-
-    mode = saved_data.get("mode", None)
-
-    def finalize():
-        m = saved_data.get("mode", mode) or "NONE"
-        stats["mode_counts"][m] = stats["mode_counts"].get(m, 0) + 1
-
-        if action.get("attack") == 1:
-            stats["attacks_light"] += 1
-        elif action.get("attack") == 2:
-            stats["attacks_heavy"] += 1
-
-        if action.get("jump"):
-            stats["jumps"] += 1
-        if action.get("dash") in ("left", "right"):
-            stats["dashes"] += 1
-
-        if action.get("move") in ("left", "right") and saved_data.get("mode") == "RETREAT":
-            stats["retreat_frames"] += 1
-
+    # emergency defense
+    if opp_attacking and dx < 220:
+        action = {
+            "move": "left" if enemy_right else "right",
+            "attack": None,
+            "jump": (dx < 160),
+            "dash": None,
+            "debug": None,
+            "saved_data": saved_data,
+        }
+        saved_data["frame"] = saved_data.get("frame", 0) + 1
         action["saved_data"] = saved_data
         return action
 
-    # dash commit
-    if saved_data.get("dash_frames_left", 0) > 0:
-        saved_data["dash_frames_left"] -= 1
-        action["dash"] = saved_data.get("dash_dir")
-        if saved_data.get("dash_frames_left", 0) == 0 and saved_data.get("dash_kind") == "in":
-            saved_data["attack_after_dash"] = 1
-        return finalize()
+    # quick anti-air
+    if opponent_info["y"] < fighter_info["y"] - 40 and dx < 220:
+        action = {
+            "move": "left" if enemy_right else "right" if dx < 180 else None,
+            "attack": None,
+            "jump": True,
+            "dash": None,
+            "debug": None,
+            "saved_data": saved_data,
+        }
+        saved_data["frame"] = saved_data.get("frame", 0) + 1
+        action["saved_data"] = saved_data
+        return action
 
-    # post-dash: only light, keep moving if not ready
-    if saved_data.get("attack_after_dash", 0) > 0:
-        if in_attack_range and (not is_attacking):
-            if light_cd == 0:
-                saved_data["attack_after_dash"] = 0
-                action["attack"] = 1
-                return finalize()
-        action["move"] = "right" if enemy_right else "left"
-        return finalize()
+    # opportunistic hit
+    if in_attack_range and (not fighter_info.get("attacking", False)):
+        if light_cd == 0:
+            action = {"move": None, "attack": 1, "jump": False, "dash": None, "debug": None, "saved_data": saved_data}
+            saved_data["frame"] = saved_data.get("frame", 0) + 1
+            action["saved_data"] = saved_data
+            return action
+        if heavy_cd == 0 and (not opp_attacking):
+            action = {"move": None, "attack": 2, "jump": False, "dash": None, "debug": None, "saved_data": saved_data}
+            saved_data["frame"] = saved_data.get("frame", 0) + 1
+            action["saved_data"] = saved_data
+            return action
 
-    frames = int(saved_data.get("mode_frames", 0))
-
-    def set_mode(m, k):
-        saved_data["mode"] = m
-        saved_data["mode_frames"] = k
-
-    # mode select
-    if frames <= 0 or (saved_data.get("mode") is None):
-        if saved_data.get("punish_frames", 0) > 0:
-            set_mode("PUNISH", 10)
-        elif opp_air:
-            set_mode("ANTI_AIR", 12)
-        elif opp_attacking and dx < 220:
-            set_mode("RETREAT", 10)
-        elif in_attack_range and (light_cd == 0):
-            set_mode("PRESSURE", 10)
-        else:
-            set_mode("APPROACH", 12)
-
-    mode = saved_data["mode"]
-    frames = int(saved_data.get("mode_frames", 0))
-    saved_data["mode_frames"] = max(0, frames - 1)
-
-    # PUNISH: heavy allowed, else light
-    if mode == "PUNISH":
-        if in_attack_range and (not is_attacking):
-            if heavy_cd == 0:
-                action["attack"] = 2
-                return finalize()
-            if light_cd == 0:
-                action["attack"] = 1
-                return finalize()
-        action["move"] = "right" if enemy_right else "left"
-        return finalize()
-
-    if mode == "ANTI_AIR":
-        action["jump"] = True
-        if dx < 200:
-            action["move"] = "left" if enemy_right else "right"
-        return finalize()
-
-    if mode == "RETREAT":
-        action["move"] = "left" if enemy_right else "right"
-        if dx < 160:
-            action["jump"] = True
-        return finalize()
-
-    # PRESSURE: only light
-    if mode == "PRESSURE":
-        if in_attack_range and (not is_attacking) and light_cd == 0:
-            action["attack"] = 1
-            return finalize()
-        action["move"] = "right" if enemy_right else "left"
-        return finalize()
-
-    # APPROACH + spacing (light only if ready)
-    ideal_min, ideal_max = 140, 170
-    if dx > ideal_max:
-        action["move"] = "right" if enemy_right else "left"
-    elif dx < ideal_min:
-        action["move"] = "left" if enemy_right else "right"
-    else:
-        if in_attack_range and (not is_attacking) and light_cd == 0:
-            action["attack"] = 1
-            return finalize()
-
-    # dash-in only if light ready
-    if dash_cd == 0 and (not in_attack_range) and dx > 260 and (light_cd == 0):
-        saved_data["dash_frames_left"] = 10
-        saved_data["dash_dir"] = "right" if enemy_right else "left"
-        saved_data["dash_kind"] = "in"
-        action["dash"] = saved_data["dash_dir"]
-        return finalize()
+    # minimax decision
+    best = choose_action_minimax(fighter_info, opponent_info, depth=2)
+    action = {
+        "move": best.get("move"),
+        "attack": best.get("attack"),
+        "jump": bool(best.get("jump", False)),
+        "dash": best.get("dash"),
+        "debug": best.get("debug", None),
+        "saved_data": saved_data,
+    }
 
     saved_data["frame"] = saved_data.get("frame", 0) + 1
-    return finalize()
+    action["saved_data"] = saved_data
+    return action
+
 
 
 
