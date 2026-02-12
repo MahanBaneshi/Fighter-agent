@@ -333,6 +333,18 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
 
     saved_data["frame"] = saved_data.get("frame", 0) + 1
     action["saved_data"] = saved_data
+
+    action["debug"] = {
+        # "enemy_direction": directions[enemy_direction],
+        # "should_we_attack": should_we_attack,
+        # "move_towards": move_towards,
+        # "should_run": should_run,
+        # "attacks_available": attacks_available,
+        # "if_attacks_available": if_attacks_available,
+        "figher_info": fighter_info,
+        # "dash": action["dash"],
+        # "move": action["move"],
+    }
     return action
 
 

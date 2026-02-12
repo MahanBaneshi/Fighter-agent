@@ -49,6 +49,24 @@ def evaluate_state(fighter_info, opponent_info) -> float:
         score += 18.0
     else:
         score -= 0.15 * heavy_cd
+    
+    # anti-air: avoid ground attacks when opponent is airborne
+    opp_airborne = opponent_info["y"] < fighter_info["y"] - 40
+    if opp_airborne and in_attack_range and fighter_info["attacking"] == False:
+        score -= 120.0
+
+    if opp_airborne:
+        if light_cd <= 0: score -= 20.0
+        if heavy_cd <= 0: score -= 30.0
+
+    # anti-air: prefer jumping when opponent is airborne
+    opp_airborne = opponent_info["y"] < fighter_info["y"] - 40
+    if opp_airborne and fighter_info.get("jump", False):
+        score += 60.0
+    if opp_airborne and (not fighter_info.get("jump", False)):
+        score -= 40.0
+
+
 
     # 4) Danger: opponent attacking while close
     if opp_attacking and in_attack_range:
@@ -63,7 +81,6 @@ def evaluate_state(fighter_info, opponent_info) -> float:
     # 6) Jump has no score effect for now
 
     return score
-
 
 def simulate_next_state(fighter_info, opponent_info, action):
     f = dict(fighter_info)
@@ -87,6 +104,13 @@ def simulate_next_state(fighter_info, opponent_info, action):
         f["x"] -= SPEED
     elif action["move"] == "right":
         f["x"] += SPEED
+
+    # jump (abstract)
+    if action.get("jump", False):
+        f["jump"] = True
+    else:
+        f["jump"] = False
+
 
     # dash
     if action["dash"] in ("left", "right") and f["dash_cooldown"] == 0:
@@ -148,9 +172,6 @@ def simulate_next_state(fighter_info, opponent_info, action):
 
     return f, o
 
-
-
-
 def choose_action_by_heuristic(fighter_info, opponent_info) -> dict:
     fx = fighter_info["x"]
     ox = opponent_info["x"]
@@ -185,7 +206,6 @@ def choose_action_by_heuristic(fighter_info, opponent_info) -> dict:
     return best
 
 
-
 def generate_actions(f_info, o_info):
     fx = f_info["x"]
     ox = o_info["x"]
@@ -197,6 +217,7 @@ def generate_actions(f_info, o_info):
         {"move": "left" if enemy_right else "right", "attack": None, "jump": False, "dash": None, "debug": None},
         {"move": None, "attack": 1, "jump": False, "dash": None, "debug": None},
         {"move": None, "attack": 2, "jump": False, "dash": None, "debug": None},
+        {"move": None, "attack": None, "jump": True, "dash": None, "debug": None},
     ]
 
     dash_cd = f_info.get("dash_cooldown", 999999)  # <-- مهم
@@ -268,6 +289,64 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
         "debug": None,
         "saved_data": saved_data,
     }
+    if not isinstance(saved_data, dict):
+        saved_data = {}
+    action["saved_data"] = saved_data
+
+    # dash safety timer
+    saved_data.setdefault("dash_safe", 0)
+    if saved_data["dash_safe"] > 0:
+        saved_data["dash_safe"] -= 1
+
+
+    # opening Dash
+    frame = int(saved_data.get("frame", 0))
+    dx0 = abs(fighter_info["x"] - opponent_info["x"])
+    if frame == 0 and fighter_info["dash_cooldown"] == 0:
+        if dx0 > 450 and (not opponent_info["attacking"]):
+            enemy_right = opponent_info["x"] > fighter_info["x"]
+            action["dash"] = "right" if enemy_right else "left"
+            saved_data["frame"] = frame + 1
+            saved_data["dash_safe"] = 3
+            action["saved_data"] = saved_data
+            return action
+
+
+    MARGIN = 120
+    opp_airborne = opponent_info["y"] < fighter_info["y"] - 40
+    near_left = fighter_info["x"] < MARGIN
+    near_right = fighter_info["x"] > 1000 - MARGIN
+    dx = abs(fighter_info["x"] - opponent_info["x"])
+
+    health_diff = fighter_info["health"] - opponent_info["health"]
+    aggro = health_diff >= 15
+
+
+    if fighter_info["dash_cooldown"] == 0 and opp_airborne and (near_left or near_right):
+        if (not opponent_info["attacking"]) and dx > 140:
+            enemy_right = opponent_info["x"] > fighter_info["x"]
+            action["dash"] = "right" if enemy_right else "left"
+            saved_data["frame"] = int(saved_data.get("frame", 0)) + 1
+            action["saved_data"] = saved_data
+            return action
+    
+
+    
+    # corner punish: if near wall and opponent airborne, dash forward to switch sides
+    MARGIN = 120
+    opp_airborne = opponent_info["y"] < fighter_info["y"] - 40
+    near_left = fighter_info["x"] < MARGIN
+    near_right = fighter_info["x"] > 1000 - MARGIN
+
+    if fighter_info["dash_cooldown"] == 0 and opp_airborne and (near_left or near_right):
+        enemy_right = opponent_info["x"] > fighter_info["x"]
+        action["dash"] = "right" if enemy_right else "left"  # dash toward opponent (into stage)
+        saved_data["frame"] = int(saved_data.get("frame", 0)) + 1
+        saved_data["dash_safe"] = 3
+        action["saved_data"] = saved_data
+        return action
+
+
 
     # pick action using miniMax chooser
     picked = choose_action_minimax(fighter_info, opponent_info, depth=2)
@@ -277,6 +356,15 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
     action["jump"] = picked["jump"]
     action["dash"] = picked["dash"]
     action["debug"] = picked.get("debug", None)
+
+    # post-dash safety override
+    if saved_data.get("dash_safe", 0) > 0:
+        enemy_right = opponent_info["x"] > fighter_info["x"]
+        picked["attack"] = None
+        picked["dash"] = None
+        picked["move"] = None
+        picked["jump"] = True  # safest default
+
 
     # keep saved_data small and stable
     if not isinstance(saved_data, dict):
@@ -292,6 +380,37 @@ def make_move(fighter_info, opponent_info, saved_data) -> dict:
     if fighter_info["x"] > 1000 - MARGIN:
         if action["move"] == "right": action["move"] = None
         if action["dash"] == "right": action["dash"] = None
+
+    # aggro override
+    if aggro:
+        dx = abs(fighter_info["x"] - opponent_info["x"])
+        dy = abs(fighter_info["y"] - opponent_info["y"])
+        opp_airborne = opponent_info["y"] < fighter_info["y"] - 40
+        light_cd, heavy_cd = fighter_info["attack_cooldown"]
+
+        # avoid attacking into airborne opponent
+        if opp_airborne:
+            picked["attack"] = None
+            picked["jump"] = True
+
+        # if close enough, force attack preference
+        if (not opp_airborne) and dx < 190 and dy < 160 and (not fighter_info["attacking"]):
+            if heavy_cd == 0:
+                picked["attack"] = 2
+            elif light_cd == 0:
+                picked["attack"] = 1
+
+    action["debug"] = {
+        # "enemy_direction": directions[enemy_direction],
+        # "should_we_attack": should_we_attack,
+        # "move_towards": move_towards,
+        # "should_run": should_run,
+        # "attacks_available": attacks_available,
+        # "if_attacks_available": if_attacks_available,
+        "figher_info": fighter_info,
+        # "dash": action["dash"],
+        # "move": action["move"],
+    }
 
 
     return action
